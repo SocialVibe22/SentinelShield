@@ -1,6 +1,6 @@
 # 🛡️ SentinelShield: Advanced PowerShell Security Auditor
 
-![Version](https://img.shields.io/badge/Version-1-brightgreen)
+![Version](https://img.shields.io/badge/Version-0.2-brightgreen)
 ![Security](https://img.shields.io/badge/Security-Enterprise--Grade-red)
 ![PowerShell](https://img.shields.io/badge/PowerShell-5.1+-blue)
 ![Platform](https://img.shields.io/badge/Platform-Windows-blue)
