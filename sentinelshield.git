@@ -1,0 +1,363 @@
+function Start-SecurityScan {
+    param (
+        [string]$OutputPath = "$env:USERPROFILE\Desktop\SecurityReport.html"
+    )
+
+    Write-Host "Starting comprehensive security scan..." -ForegroundColor Cyan
+    $startTime = Get-Date
+    $computerName = $env:COMPUTERNAME
+    $reportDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $securityIssues = @()
+    $securityPassed = @()
+
+    $reportHeader = @"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Security Scan Report - $computerName</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1, h2 { color: #0066cc; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .summary { background-color: #f0f0f0; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+        .issue { background-color: #ffebee; padding: 10px; margin: 5px 0; border-left: 4px solid #f44336; }
+        .passed { background-color: #e8f5e9; padding: 10px; margin: 5px 0; border-left: 4px solid #4caf50; }
+        table { width: 100%; border-collapse: collapse; margin: 15px 0; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+        th { background-color: #f2f2f2; }
+        .critical { color: #d32f2f; font-weight: bold; }
+        .warning { color: #ff9800; font-weight: bold; }
+        .info { color: #2196f3; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Security Scan Report</h1>
+        <div class="summary">
+            <p><strong>Computer Name:</strong> $computerName</p>
+            <p><strong>Scan Date:</strong> $reportDate</p>
+        </div>
+"@
+
+    Write-Host "Checking system information..." -ForegroundColor Yellow
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem
+        $osInfo = "Operating System: $($os.Caption) $($os.Version) ($($os.OSArchitecture))"
+        $securityPassed += @{Category="System Info"; Item="OS Information"; Status="Info"; Details=$osInfo}
+        
+        $lastBootUpTime = $os.LastBootUpTime
+        $uptime = (Get-Date) - $lastBootUpTime
+        if ($uptime.Days -gt 7) {
+            $securityIssues += @{Category="System Updates"; Item="System Uptime"; Status="Warning"; 
+                Details="System has been running for $($uptime.Days) days without restart. This may indicate missing updates."}
+        } else {
+            $securityPassed += @{Category="System Updates"; Item="System Uptime"; Status="Passed"; 
+                Details="System was restarted within the last 7 days ($($uptime.Days) days ago)."}
+        }
+    } catch {
+        $securityIssues += @{Category="System Info"; Item="OS Information"; Status="Error"; Details="Failed to retrieve OS information: $_"}
+    }
+
+    Write-Host "Checking Windows Firewall status..." -ForegroundColor Yellow
+    try {
+        $firewallProfiles = Get-NetFirewallProfile -ErrorAction Stop
+        foreach ($profile in $firewallProfiles) {
+            if ($profile.Enabled) {
+                $securityPassed += @{Category="Firewall"; Item="$($profile.Name) Profile"; Status="Passed"; 
+                    Details="$($profile.Name) firewall profile is enabled."}
+            } else {
+                $securityIssues += @{Category="Firewall"; Item="$($profile.Name) Profile"; Status="Critical"; 
+                    Details="$($profile.Name) firewall profile is disabled."}
+            }
+        }
+    } catch {
+        $securityIssues += @{Category="Firewall"; Item="Firewall Status"; Status="Error"; Details="Failed to check firewall status: $_"}
+    }
+
+    Write-Host "Checking antivirus status..." -ForegroundColor Yellow
+    try {
+        $antivirusProducts = Get-CimInstance -Namespace root/SecurityCenter2 -ClassName AntivirusProduct -ErrorAction Stop
+        if ($antivirusProducts.Count -eq 0) {
+            $securityIssues += @{Category="Antivirus"; Item="Antivirus Software"; Status="Critical"; 
+                Details="No antivirus software detected."}
+        } else {
+            foreach ($av in $antivirusProducts) {
+                $avStatus = switch ($av.productState) {
+                    "262144" { "Disabled" }
+                    "266240" { "Enabled & Up to date" }
+                    "262160" { "Disabled & Out of date" }
+                    "266256" { "Enabled & Out of date" }
+                    default { "Unknown (State: $($av.productState))" }
+                }
+                
+                if ($avStatus -like "*Enabled*" -and $avStatus -like "*Up to date*") {
+                    $securityPassed += @{Category="Antivirus"; Item=$av.displayName; Status="Passed"; 
+                        Details="$($av.displayName) is enabled and up to date."}
+                } else {
+                    $securityIssues += @{Category="Antivirus"; Item=$av.displayName; Status="Critical"; 
+                        Details="$($av.displayName) status: $avStatus"}
+                }
+            }
+        }
+    } catch {
+        $securityIssues += @{Category="Antivirus"; Item="Antivirus Status"; Status="Warning"; 
+            Details="Failed to check antivirus status: $_"}
+    }
+
+    Write-Host "Checking for pending Windows updates..." -ForegroundColor Yellow
+    try {
+        $updateSession = New-Object -ComObject Microsoft.Update.Session
+        $updateSearcher = $updateSession.CreateUpdateSearcher()
+        $pendingUpdates = $updateSearcher.Search("IsInstalled=0")
+        
+        if ($pendingUpdates.Updates.Count -gt 0) {
+            $updateList = $pendingUpdates.Updates | ForEach-Object { $_.Title }
+            $updateDetails = "Found $($pendingUpdates.Updates.Count) pending updates: $($updateList -join '; ')"
+            $securityIssues += @{Category="System Updates"; Item="Windows Updates"; Status="Warning"; Details=$updateDetails}
+        } else {
+            $securityPassed += @{Category="System Updates"; Item="Windows Updates"; Status="Passed"; 
+                Details="No pending Windows updates found."}
+        }
+    } catch {
+        $securityIssues += @{Category="System Updates"; Item="Windows Updates"; Status="Warning"; 
+            Details="Failed to check for Windows updates: $_"}
+    }
+
+    Write-Host "Checking user account security..." -ForegroundColor Yellow
+    try {
+        $guestAccount = Get-LocalUser -Name "Guest" -ErrorAction SilentlyContinue
+        if ($guestAccount -and $guestAccount.Enabled) {
+            $securityIssues += @{Category="User Accounts"; Item="Guest Account"; Status="Critical"; 
+                Details="Guest account is enabled. This is a security risk."}
+        } else {
+            $securityPassed += @{Category="User Accounts"; Item="Guest Account"; Status="Passed"; 
+                Details="Guest account is disabled or not present."}
+        }
+        
+        $emptyPasswordAccounts = Get-LocalUser | Where-Object { $_.Enabled -and $_.PasswordRequired -eq $false }
+        if ($emptyPasswordAccounts) {
+            $accountList = ($emptyPasswordAccounts | ForEach-Object { $_.Name }) -join ", "
+            $securityIssues += @{Category="User Accounts"; Item="Empty Passwords"; Status="Critical"; 
+                Details="Found accounts with empty passwords: $accountList"}
+        } else {
+            $securityPassed += @{Category="User Accounts"; Item="Empty Passwords"; Status="Passed"; 
+                Details="No accounts with empty passwords found."}
+        }
+    } catch {
+        $securityIssues += @{Category="User Accounts"; Item="Account Check"; Status="Warning"; 
+            Details="Failed to check user accounts: $_"}
+    }
+
+    Write-Host "Checking for suspicious network connections..." -ForegroundColor Yellow
+    try {
+        $suspiciousPorts = @(4444, 31337, 1337, 666, 6666, 6667, 25, 139, 67, 68)
+        $connections = Get-NetTCPConnection -State Listen -ErrorAction Stop
+        $suspiciousConnections = $connections | Where-Object { $suspiciousPorts -contains $_.LocalPort }
+        
+        if ($suspiciousConnections) {
+            $connDetails = $suspiciousConnections | ForEach-Object {
+                $process = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue
+                "Port $($_.LocalPort) - Process: $($process.Name) (PID: $($_.OwningProcess))"
+            }
+            $securityIssues += @{Category="Network"; Item="Suspicious Ports"; Status="Warning"; 
+                Details="Found potentially suspicious open ports: $($connDetails -join '; ')"}
+        } else {
+            $securityPassed += @{Category="Network"; Item="Suspicious Ports"; Status="Passed"; 
+                Details="No suspicious network ports detected."}
+        }
+    } catch {
+        $securityIssues += @{Category="Network"; Item="Network Connections"; Status="Warning"; 
+            Details="Failed to check network connections: $_"}
+    }
+
+    Write-Host "Checking for unauthorized scheduled tasks..." -ForegroundColor Yellow
+    try {
+        $suspiciousTasks = Get-ScheduledTask | Where-Object { 
+            $_.TaskPath -notlike "\Microsoft\*" -and $_.State -eq "Ready" 
+        }
+        
+        if ($suspiciousTasks.Count -gt 10) {
+            $taskList = ($suspiciousTasks | Select-Object -First 10 | ForEach-Object { $_.TaskName }) -join ", "
+            $securityIssues += @{Category="System"; Item="Scheduled Tasks"; Status="Warning"; 
+                Details="Found $($suspiciousTasks.Count) non-Microsoft scheduled tasks (showing first 10): $taskList"}
+        } elseif ($suspiciousTasks.Count -gt 0) {
+            $taskList = ($suspiciousTasks | ForEach-Object { $_.TaskName }) -join ", "
+            $securityIssues += @{Category="System"; Item="Scheduled Tasks"; Status="Info"; 
+                Details="Found $($suspiciousTasks.Count) non-Microsoft scheduled tasks: $taskList"}
+        } else {
+            $securityPassed += @{Category="System"; Item="Scheduled Tasks"; Status="Passed"; 
+                Details="No suspicious scheduled tasks found."}
+        }
+    } catch {
+        $securityIssues += @{Category="System"; Item="Scheduled Tasks"; Status="Warning"; 
+            Details="Failed to check scheduled tasks: $_"}
+    }
+
+    Write-Host "Checking BitLocker status..." -ForegroundColor Yellow
+    try {
+        $bitlockerVolumes = Get-BitLockerVolume -ErrorAction Stop
+        $systemDrive = $bitlockerVolumes | Where-Object { $_.MountPoint -eq $env:SystemDrive }
+        
+        if ($systemDrive) {
+            if ($systemDrive.ProtectionStatus -eq "On") {
+                $securityPassed += @{Category="Encryption"; Item="BitLocker"; Status="Passed"; 
+                    Details="BitLocker is enabled on the system drive."}
+            } else {
+                $securityIssues += @{Category="Encryption"; Item="BitLocker"; Status="Warning"; 
+                    Details="BitLocker is not enabled on the system drive."}
+            }
+        } else {
+            $securityIssues += @{Category="Encryption"; Item="BitLocker"; Status="Warning"; 
+                Details="BitLocker status could not be determined for the system drive."}
+        }
+    } catch {
+        $securityIssues += @{Category="Encryption"; Item="BitLocker"; Status="Info"; 
+            Details="BitLocker may not be available on this system: $_"}
+    }
+
+    Write-Host "Checking for critical services..." -ForegroundColor Yellow
+    try {
+        $criticalServices = @{
+            "wuauserv" = "Windows Update";
+            "WinDefend" = "Windows Defender";
+            "MpsSvc" = "Windows Firewall";
+            "EventLog" = "Windows Event Log"
+        }
+        
+        foreach ($service in $criticalServices.GetEnumerator()) {
+            $svc = Get-Service -Name $service.Key -ErrorAction SilentlyContinue
+            if ($svc) {
+                if ($svc.Status -eq "Running") {
+                    $securityPassed += @{Category="Services"; Item=$service.Value; Status="Passed"; 
+                        Details="$($service.Value) service is running."}
+                } else {
+                    $securityIssues += @{Category="Services"; Item=$service.Value; Status="Critical"; 
+                        Details="$($service.Value) service is not running (Status: $($svc.Status))."}
+                }
+            } else {
+                $securityIssues += @{Category="Services"; Item=$service.Value; Status="Critical"; 
+                    Details="$($service.Value) service was not found."}
+            }
+        }
+    } catch {
+        $securityIssues += @{Category="Services"; Item="Critical Services"; Status="Warning"; 
+            Details="Failed to check critical services: $_"}
+    }
+
+    $totalChecks = $securityIssues.Count + $securityPassed.Count
+    $passedChecks = $securityPassed.Count
+    $securityScore = [math]::Round(($passedChecks / $totalChecks) * 100)
+    $scoreColor = switch ($securityScore) {
+        {$_ -ge 90} { "#4caf50" } 
+        {$_ -ge 70} { "#ff9800" } 
+        default { "#f44336" }    
+    }
+
+    $reportContent = $reportHeader
+
+    $reportContent += @"
+        <h2>Security Score: <span style="color: $scoreColor">$securityScore%</span></h2>
+        <p>Passed $passedChecks out of $totalChecks security checks</p>
+        
+        <h2>Security Issues Found</h2>
+"@
+
+    if ($securityIssues.Count -gt 0) {
+        $reportContent += "<table><tr><th>Category</th><th>Item</th><th>Status</th><th>Details</th></tr>"
+        foreach ($issue in $securityIssues) {
+            $statusClass = switch ($issue.Status) {
+                "Critical" { "critical" }
+                "Warning" { "warning" }
+                default { "info" }
+            }
+            $reportContent += "<tr><td>$($issue.Category)</td><td>$($issue.Item)</td><td class='$statusClass'>$($issue.Status)</td><td>$($issue.Details)</td></tr>"
+        }
+        $reportContent += "</table>"
+    } else {
+        $reportContent += "<p>No security issues found.</p>"
+    }
+
+    $reportContent += @"
+        <h2>Passed Security Checks</h2>
+"@
+
+    if ($securityPassed.Count -gt 0) {
+        $reportContent += "<table><tr><th>Category</th><th>Item</th><th>Status</th><th>Details</th></tr>"
+        foreach ($pass in $securityPassed) {
+            $reportContent += "<tr><td>$($pass.Category)</td><td>$($pass.Item)</td><td>$($pass.Status)</td><td>$($pass.Details)</td></tr>"
+        }
+        $reportContent += "</table>"
+    } else {
+        $reportContent += "<p>No passed security checks.</p>"
+    }
+
+    $reportContent += @"
+        <h2>Security Recommendations</h2>
+        <ul>
+"@
+
+    if ($securityIssues | Where-Object { $_.Category -eq "Firewall" }) {
+        $reportContent += "<li>Enable Windows Firewall for all network profiles to protect against unauthorized access.</li>"
+    }
+    
+    if ($securityIssues | Where-Object { $_.Category -eq "Antivirus" }) {
+        $reportContent += "<li>Install or update antivirus software to protect against malware and viruses.</li>"
+    }
+    
+    if ($securityIssues | Where-Object { $_.Category -eq "System Updates" }) {
+        $reportContent += "<li>Install all pending Windows updates to patch security vulnerabilities.</li>"
+    }
+    
+    if ($securityIssues | Where-Object { $_.Category -eq "User Accounts" }) {
+        $reportContent += "<li>Review user accounts and ensure all accounts have strong passwords.</li>"
+        $reportContent += "<li>Disable the Guest account if it's not needed.</li>"
+    }
+    
+    if ($securityIssues | Where-Object { $_.Category -eq "Encryption" }) {
+        $reportContent += "<li>Enable BitLocker drive encryption to protect sensitive data.</li>"
+    }
+    
+    if ($securityIssues | Where-Object { $_.Category -eq "Services" }) {
+        $reportContent += "<li>Ensure all critical Windows services are running properly.</li>"
+    }
+
+    $reportContent += @"
+        <li>Regularly backup important data to prevent loss from ransomware or hardware failure.</li>
+        <li>Use strong, unique passwords for all accounts and consider a password manager.</li>
+        <li>Enable multi-factor authentication where available.</li>
+        <li>Be cautious of phishing emails and suspicious websites.</li>
+    </ul>
+"@
+
+    $endTime = Get-Date
+    $duration = $endTime - $startTime
+    $scanDuration = "{0:mm}:{0:ss}" -f $duration
+
+    $reportContent += @"
+        <div class="summary">
+            <p><strong>Scan Duration:</strong> $scanDuration minutes</p>
+            <p><small>Generated by PowerShell Security Scanner on $reportDate</small></p>
+        </div>
+    </div>
+</body>
+</html>
+"@
+
+    try {
+        $reportContent | Out-File -FilePath $OutputPath -Encoding UTF8
+        Write-Host "Security scan complete!" -ForegroundColor Green
+        Write-Host "Security Score: $securityScore%" -ForegroundColor $(if ($securityScore -ge 90) { "Green" } elseif ($securityScore -ge 70) { "Yellow" } else { "Red" })
+        Write-Host "Report saved to: $OutputPath" -ForegroundColor Cyan
+        Write-Host "Open the HTML report to view detailed results and recommendations." -ForegroundColor Cyan
+        
+        try {
+            Start-Process $OutputPath
+        } catch {
+            Write-Host "Could not open the report automatically. Please open it manually." -ForegroundColor Yellow
+        }
+    } catch {
+        Write-Host "Error saving report: $_" -ForegroundColor Red
+    }
+}
+
+Start-SecurityScan
