@@ -35,7 +35,7 @@ SentinelShield goes beyond basic security scanning to provide:
 ### Installation
 1. Download the SentinelShield script:
    ```
-   git clone https://github.com/master/sentinelshield.git
+   git clone https://github.com/SocialVibe22/sentinelshield.git
    cd sentinelshield
    ```
 
